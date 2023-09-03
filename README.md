@@ -11,6 +11,7 @@ The eeprom programmer was enhanced to:
 1. Allow selection between the above chips, which can be on the board at the same time.
 1. Disable Software Data Protection (SDP).
 1. Poll the chip to detect when data was actually written rather than sleep unnecessarily long.
+1. Log messages via an on-board OLED screen.
 
 ![my c64](images/my-c64.png)
 ![my userport breakout](images/my-userport-breakout.png)

@@ -1,5 +1,7 @@
 # c64eeprom
 
+With this code and the related hardware changes, you can write assembly on the C64 using Turbo Macro Pro and send the assembled code via rs232 to an arduino-based eeprom programmer that you build yourself. The programmer then writes the bytes at the location you specify directly to the eeprom. Check out this [Youtube video](https://youtu.be/HGbG21RBjN8) if you want a full overview, including a walkthrough of the code.
+
 Motivation: I'm building one of Ben Eater's [6502 computers](https://www.youtube.com/watch?v=LnzuMJLZRdU). I was waiting on some parts and decided to build one of his [eeprom programmers](https://github.com/beneater/eeprom-programmer). Instead of doing it stock, I decided to add some enhancements as part of my learning exercise.
 
 ![eeprom programmer](images/my-eeprom-programmer.png)
@@ -18,8 +20,6 @@ I wanted to be able to write assembly code using Turbo Macro Pro (TMP) on my c64
 1. Wire up the c64 user port to the eeprom programmer.
 1. Send data over RS232 from the c64 to the eeprom programmer.
 1. Check for errors in sending.
-
-I recorded all of this in a Youtube video including some quick code walkthroughs.
 
 Note: I'm a noob on a lot of this stuff, so I probably did stupid things. Oh well, I'm learning.
 

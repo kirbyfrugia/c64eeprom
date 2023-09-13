@@ -51,9 +51,9 @@ unsigned int c64_bytesRead = 0;
 unsigned int c64_checksumLo = 0;
 unsigned int c64_checksumHi = 0;
 
-bool c64_inErrorState = false;
+bool c64_acceptingData = false;
 
-unsigned long dataLastReceivedMS = 0; // how long it has been since we received any data
+unsigned long dataLastReceivedMS = 0; // how long it has been since we received any data at all
 
 int c64_bytesBuf[16];
 int c64_headerBuf[4];
@@ -299,20 +299,18 @@ void c64_printReceivedBytes(int startIndex) {
 //   We probably should.
 // Regarding error states:
 //   We throw away bytes we receive while we are in an error
-//   state (c64_inErrorState) unless we get a brand new byte array
+//   state (c64_acceptingData is false) unless we get a brand new byte array
 //   with message type 1. This allows us to continue after a failure.
-void c64_processReceivedBytes() {
+// Returns true if successfully processed
+bool c64_processReceivedBytes() {
   int startIndex = 0;
   if (c64_messageType == 1) {
     // we're processing the very first bytes
     if (c64_bytesRead < 2) {
-      // this is an error!
-      c64_inErrorState = true;
-      
+      c64_acceptingData = false;      
       printLine("ERR: Read less than 2 bytes on start of byte array. Expected start address.");
-      return;
+      return false;
     }
-    c64_inErrorState = false;
 
     currentAddress = (c64_bytesBuf[1] << 8) | c64_bytesBuf[0];
     startAddress = currentAddress;
@@ -322,14 +320,6 @@ void c64_processReceivedBytes() {
     printLine(buf);
 
     startIndex = 2;
-  }
-  else if (c64_messageType == 2) {
-    if (c64_inErrorState) {
-      printLine("ERR: Throwing away message because in error state");
-      return;
-    }
-
-    startIndex = 0;
   }
 
   c64_printReceivedBytes(0);
@@ -346,8 +336,8 @@ void c64_processReceivedBytes() {
       sprintf(buf, "D: %02x A: %04x ST: E", data, currentAddress);
       printLine(buf);
 
-      c64_inErrorState = true;
-      return;
+      c64_acceptingData = false;
+      return false;
     }
     ++currentAddress;
   }
@@ -355,6 +345,8 @@ void c64_processReceivedBytes() {
   char buf[30];
   sprintf(buf, "ROM St:%04x End:%04x", startAddress, currentAddress);
   printLine(buf);
+
+  return true;
 }
 
 // To validate the checksum
@@ -364,7 +356,7 @@ void c64_processReceivedBytes() {
 // Note: we only validate the checksum for the bytes, not the header.
 //   If the header gets corrupted, we're kinda in trouble and don't
 //   do anything about it. TODO implement a solution to that problem.
-void c64_validateChecksum() {
+bool c64_validateChecksum() {
   unsigned int checksumReceived = ((unsigned int)c64_checksumHi << 8) + c64_checksumLo;
 
   unsigned int checksumCalculated = 0;
@@ -395,8 +387,8 @@ void c64_validateChecksum() {
   // check that all bits are 1
   for (int i = 0; i < numBits; ++i) {
     if ((checked & 1) == 0) {
-      c64_inErrorState = true;
       checksumError = true;
+      c64_acceptingData = false;
       break;
     }
     checked = checked >> 1;
@@ -407,8 +399,10 @@ void c64_validateChecksum() {
     char buf[60];
     sprintf(buf, "calc=%d, rcvd=%d, sum=%d", checksumCalculated, checksumReceived, summed);
     printLine(buf);
-    c64_resetPipe();
+    return false;
   }
+
+  return true;
 }
 
 void decodeHeader(int headerByte) {
@@ -452,31 +446,42 @@ void setup() {
   printLine(S_AWAITING_DATA);
 }
 
-// Get ready for new data. Either we received everything or it's been
-// too long since we last got data.
+// Get ready for new data. Only call this if you know we are in a good
+// state to receive data.
 void c64_resetPipe() {
   dataLastReceivedMS = millis();
   c64_messageType = 0;
   c64_bytesExpected = 0;
   c64_bytesRead = 0;
   c64_currentHeaderByte = 0;
-  c64_inErrorState = false;
+  c64_acceptingData = true;
+
 }
 
-void loop() {
-  checkAndSetSelectedEEPROM();
-
+// if we got some data but it's been too long since we got the next bit of data
+// then let's clean everything up and start listening for new data.
+void c64_checkTimeoutAndUpdateState() {
   unsigned long currentTimeMS = millis();
 
   if((c64_messageType != 0) && (currentTimeMS - dataLastReceivedMS) > C64_DATA_TIMEOUT_MS) {
     c64_resetPipe();
     printLine(S_AWAITING_DATA);
   }
+}
+
+void loop() {
+  checkAndSetSelectedEEPROM();
+  c64_checkTimeoutAndUpdateState();
 
   // IF THE C64 HAS DATA THEN PRINT IT HERE
   if (c64_Serial.available() > 0) {
     dataLastReceivedMS = millis();
     int byteRead = c64_Serial.read();
+
+    // if we're in an error state, we'll just throw away anything we receive until we time out
+    if (!c64_acceptingData) {
+      return;
+    }
 
     if (c64_currentHeaderByte == 0) {
       decodeHeader(byteRead);
@@ -494,10 +499,14 @@ void loop() {
       ++c64_bytesRead;
 
       if (c64_bytesRead == c64_bytesExpected) {
-        c64_validateChecksum();
-        c64_processReceivedBytes();
+        if(!c64_validateChecksum()) {
+          return;
+        }
+        if(!c64_processReceivedBytes()) {
+          return;
+        }
 
-        c64_resetPipe(); // wait for data again
+        c64_resetPipe(); // wait for data again since this was successful.
       }
     }
   }

@@ -1,75 +1,94 @@
-10 REM READ AND OUTPUT FILE
-20 REM OPEN RS232 FIRST BECAUSE THIS ACTUALLY ERASES ALL BASIC VARIABLES.
-30 REM OPEN RS232 AT 1200 BAUD
-40 OPEN2,2,4,CHR$(8)+CHR$(0)
-50 GET#2,S$ :REM TURN ON RECEIVER
-60 OPEN 15,9,15:REM DISK CMD CHANNEL
-70 PRINT"ENTER FILE NAME. DEFAULT:EXAMPLE":INPUT F$
-80 IF F$="" THEN F$="EXAMPLE"
-90 PRINT "FILE: ";F$
-300 REM MSG TYPE, 1=START,2=CONT
-310 MT=1  :REM MSG TYPE
-320 EO=0  :REM USED TO HOLD STATUS
-330 EN=0  :REM ERROR NUMBER IF ERROR
-340 NB=0  :REM NUM BYTES TO SEND
-350 MX=8  :REM MAX BYTES, MUST BE <8
-360 DIM BYTES$(MX)
-380 CS=0  :REM CHECKSUM
-390 CU=0  :REM UPPER BYTE CHECKSUM
-400 CL=0  :REM LOWER BYTE CHECKSUM
-500 REM OPEN FILE TO BE SENT
-510 OPEN5,9,8,"0:"+F$+",P,R"
-520 GOSUB 59980 :REM CHECK FOR ERRORS
-530 IF EN>1 GOTO 49980
-540 GET#5,B$:REM READ A BYTE
-550 EO=ST
-570 IF B$="" THEN B$=CHR$(0)
-580 BYTES$(NB)=B$
-590 NB=NB+1
-600 CS=CS+ASC(B$)
-610 REM IF WE FILLED ARRAY, SEND BYTES
-620 IF NB>=MX THEN GOSUB 1000
-630 REM IF NOT EOF, KEEP GOING
-640 IF EO<>64 GOTO 540
-650 REM SEND ANY REMAINING BYTES
-660 IF NB>0 THEN GOSUB 1000
-665 PRINT""
-670 PRINT "SEND COMPLETE"
-680 GOTO 49980 :REM END PROG
-1000 REM SEND BYTES
-1010 GOSUB 3000
-1035 MH=MT*2^5+NB
-1040 REM SEND HEADER
-1050 PRINT#2,CHR$(MH);
-1080 REM SEND CHECKSUM LO BYTE
-1090 PRINT#2,CHR$(CL);
-1100 REM SEND CHECKSUM HI BYTE
-1110 PRINT#2,CHR$(CU);
-1120 FOR B=0 TO NB-1
-1130 PRINT "w";
-1140 PRINT#2,BYTES$(B);:REM SEND BYTE
-1150 NEXT B
-1160 REM WAIT UNTIL ALL BYTES SENT
-1170 IF (PEEK(673)AND1)THEN 1170
-1175 PRINT "q";
-1180 NB=0
-1200 CS=0
-1210 CU=0
-1220 CL=0
-1230 MT=2 :REM WE ALREADY SENT FIRST
-1240 RETURN
-3000 REM CALCULATE CHECKSUM
-3010 REM ONLY WORKS UP TO 12 BITS
-3020 REM 1S COMPLEMENT
-3030 CS=(CS+4095)-2*(CS AND 4095)
-3040 CU=CS/256
-3050 CL=CS AND 255
-3070 RETURN
-49980 REM EXIT CLEANLY
-49990 PRINT"CLOSING RS232 AND FILE"
-50000 CLOSE15:CLOSE5
-50010 END
-59980 REM READ ERROR CHANNEL
-59990 INPUT#15,EN,EM$,ET,ES
-60000 IF EN>1 THEN PRINT EN,EM$,ET,ES
-60010 RETURN
+   10 rem read and output file
+   20 rem open rs232 first because this actually erases all basic variables.
+   30 rem open rs232 at 1200 baud
+   40 open2,2,4,chr$(8)+chr$(0)
+   50 get#2,s$ :rem turn on receiver
+   60 open 15,9,15:rem disk cmd channel
+   70 print"enter file name. default:example":input f$
+   80 if f$="" then f$="example"
+   90 print "file: ";f$
+  300 rem msg type, 1=start,2=cont
+  310 mt=1  :rem msg type
+  320 eo=0  :rem used to hold status
+  330 en=0  :rem error number if error
+  340 nb=0  :rem num bytes to send
+  350 mx=8  :rem max bytes, must be <8
+  360 dim bytes$(mx)
+  370 br=0  :rem bytes read from file
+  380 cs=0  :rem checksum
+  390 cu=0  :rem upper byte checksum
+  400 cl=0  :rem lower byte checksum
+  410 b0=0  :rem repl addr lo byte w/this
+  420 b1=0  :rem repl addr hi byte w/this
+  425 ba=0  :rem repl addr full addr
+  430 ra$="":rem repl addr input
+  445 print:print"are you sending an assembled"
+  446 print"program and want to override"
+  447 print"the start address? [y/n]":input ra$
+  455 if ra$<>"y" goto 500
+  456 print"new start address lo byte (int)":input b0
+  457 print"new start address hi byte (int)":input b1
+  460 ba=b1 * 256 + b0
+  465 print"byte 0: ";b0;", byte 1: ";b1;", full addr: ";ba
+  470 print"proceed with this addr [y/n]":input ra$
+  475 if ra$<>"y" goto 49980
+  500 rem open file to be sent
+  510 open5,9,8,"0:"+f$+",p,r"
+  520 gosub 59980 :rem check for errors
+  530 if en>1 goto 49980
+  540 get#5,b$:rem read a byte
+  550 eo=st
+  560 br=br+1
+  561 rem repl address if user wanted to
+  562 if br=1 and ra$="y" then b$=chr$(b0)
+  564 if br=2 and ra$="y" then b$=chr$(b1)
+  570 if b$="" then b$=chr$(0)
+  580 bytes$(nb)=b$
+  590 nb=nb+1
+  600 cs=cs+asc(b$)
+  610 rem if we filled array, send bytes
+  620 if nb>=mx then gosub 1000
+  630 rem if not eof, keep going
+  640 if eo<>64 goto 540
+  650 rem send any remaining bytes
+  660 if nb>0 then gosub 1000
+  665 print""
+  670 print "send complete"
+  680 goto 49980 :rem end prog
+ 1000 rem send bytes
+ 1010 gosub 3000
+ 1035 mh=mt*2^5+nb
+ 1040 rem send header
+ 1050 print#2,chr$(mh);
+ 1080 rem send checksum lo byte
+ 1090 print#2,chr$(cl);
+ 1100 rem send checksum hi byte
+ 1110 print#2,chr$(cu);
+ 1120 for b=0 to nb-1
+ 1130 print "W";
+ 1140 print#2,bytes$(b);:rem send byte
+ 1150 next b
+ 1160 rem wait until all bytes sent
+ 1170 if (peek(673)and1)then 1170
+ 1175 print "Q";
+ 1180 nb=0
+ 1200 cs=0
+ 1210 cu=0
+ 1220 cl=0
+ 1230 mt=2 :rem we already sent first
+ 1240 return
+ 3000 rem calculate checksum
+ 3010 rem only works up to 12 bits
+ 3020 rem 1s complement
+ 3030 cs=(cs+4095)-2*(cs and 4095)
+ 3040 cu=cs/256
+ 3050 cl=cs and 255
+ 3070 return
+49980 rem exit cleanly
+49990 print"closing rs232 and file"
+50000 close15:close5
+50010 end
+59980 rem read error channel
+59990 input#15,en,em$,et,es
+60000 if en>1 then print en,em$,et,es
+60010 return

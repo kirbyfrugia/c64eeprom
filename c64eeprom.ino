@@ -205,7 +205,7 @@ void setupC64() {
   pinMode(c64_RX, INPUT);
   pinMode(C64_TX, OUTPUT);
 
-  c64_Serial.begin(1200);
+  c64_Serial.begin(9600);
 }
 
 int writeTestData(unsigned int finalAddress, unsigned int fakeDataOffset) {
@@ -343,7 +343,7 @@ bool c64_processReceivedBytes() {
   }
 
   char buf[30];
-  sprintf(buf, "ROM St:%04x End:%04x", startAddress, currentAddress);
+  sprintf(buf, "ROM St:%04x Next:%04x", startAddress, currentAddress);
   printLine(buf);
 
   return true;

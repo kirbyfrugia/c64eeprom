@@ -12,11 +12,10 @@
 #define EEPROM_CE 13
 #define EEPROM_OE A1
 #define EEPROM_WE A2
-#define c64_RX A0
-#define C64_TX A3
+#define EXT_RX A0
+#define EXT_TX A3
 
-#define C64_DATA_TIMEOUT_MS 10000
-
+#define EXT_DATA_REPLY_TIMEOUT_MS 2000
 
 // Wiring for OLED
 // A4 - SDA, A5 - SCL
@@ -30,7 +29,7 @@
 
 SSD1306AsciiWire oled;
 
-SoftwareSerial c64_Serial(c64_RX, C64_TX);
+SoftwareSerial ext_Serial(EXT_RX, EXT_TX);
 
 unsigned int startAddress = 0;
 unsigned int currentAddress = 0;
@@ -42,21 +41,30 @@ const char * S_AWAITING_DATA = "Awaiting data...";
 const char * S_CHECKSUM_ERROR = "Checksum error";
 const char * S_WRITE_EEPROM_ERROR = "Error writing EEPROM";
 const char * S_OK = "OK";
+const char * S_ERROR_RESET = "Err. Reset to retry";
+const char * S_DONE_RESET = "Ok. Reset to retry";
 
-unsigned int c64_currentHeaderByte = 0;
-unsigned int c64_messageType = 0;
-unsigned int c64_bytesExpected = 0;
-unsigned int c64_bytesRead = 0;
+const char REPLY_TIMEOUT = 'T';
+const char REPLY_ACK = 'A';
+const char REPLY_CHECKSUM_ERROR = 'C';
+const char REPLY_RETRY = 'R';
 
-unsigned int c64_checksumLo = 0;
-unsigned int c64_checksumHi = 0;
+enum State { ERROR, DONE, AWAITING_NEXT_PACKET, AWAITING_HEADER_CHECKSUM_LO, AWAITING_HEADER_CHECKSUM_HI, AWAITING_BYTES };
 
-bool c64_acceptingData = false;
+State ext_state = AWAITING_NEXT_PACKET;
+
+unsigned int ext_messageType = 0;
+unsigned int ext_bytesExpected = 0;
+unsigned int ext_bytesRead = 0;
+unsigned int ext_totalBytesRead = 0;
+
+unsigned int ext_checksumLo = 0;
+unsigned int ext_checksumHi = 0;
 
 unsigned long dataLastReceivedMS = 0; // how long it has been since we received any data at all
 
-int c64_bytesBuf[16];
-int c64_headerBuf[4];
+int ext_bytesBuf[16];
+int ext_headerBuf[4];
 
 void setDataPinsToRead() {
   for (unsigned int pin = EEPROM_D7; pin >= EEPROM_D0; pin -= 1) {
@@ -201,11 +209,11 @@ void printContents(unsigned int lastByte) {
   }
 }
 
-void setupC64() {
-  pinMode(c64_RX, INPUT);
-  pinMode(C64_TX, OUTPUT);
+void setupEXT() {
+  pinMode(EXT_RX, INPUT);
+  pinMode(EXT_TX, OUTPUT);
 
-  c64_Serial.begin(9600);
+  ext_Serial.begin(9600);
 }
 
 int writeTestData(unsigned int finalAddress, unsigned int fakeDataOffset) {
@@ -272,21 +280,21 @@ void checkAndSetSelectedEEPROM() {
   printSelectedEEPROM();
 }
 
-void c64_printReceivedBytes(int startIndex) {
-  char buf[3 + c64_bytesRead * 2];
+void ext_printReceivedBytes(int startIndex) {
+  char buf[3 + ext_bytesRead * 2];
   char *p = buf;  // location to add to string
   sprintf(buf, "RX: ");
 
-  for (int i = startIndex; i < c64_bytesRead; ++i) {
+  for (int i = startIndex; i < ext_bytesRead; ++i) {
     p = buf + 3 + ((i - startIndex) * 2);  // start of string plus 4 chars per bytet
-    sprintf(p, "%02x", c64_bytesBuf[i]);
+    sprintf(p, "%02x", ext_bytesBuf[i]);
   }
   
   printLine(buf);
 }
 
 // Ok, here's what a typical received file comm would look like:
-// Very first bytes received:
+// Very first packet received:
 //   Byte 0:         Message Header -> Message Type 1, Number of Bytes
 //   Bytes 1 and 2:  1's complement checksum bytes, lo first
 //   Bytes 3 and 4:  address to write the ROM data to.
@@ -295,24 +303,22 @@ void c64_printReceivedBytes(int startIndex) {
 //   Byte 0:         Message Header -> Message Type 2, Number of Bytes
 //   Bytes 1 and 2:  1's complement checksum bytes, lo first
 //   Bytes 3+:       rest of bytes
-// Note: we don't detect the end of writes other than through a timeout.
-//   We probably should.
+// Last packet received:
+//   Byte 0:         Message Header -> Message Type 3, Number of Bytes = 0
+//   Bytes 1 and 2:  1's complement checksum bytes, lo first
 // Regarding error states:
 //   We throw away bytes we receive while we are in an error
-//   state (c64_acceptingData is false) unless we get a brand new byte array
-//   with message type 1. This allows us to continue after a failure.
-// Returns true if successfully processed
-bool c64_processReceivedBytes() {
+// Returns state after processing
+State ext_processReceivedBytes() {
   int startIndex = 0;
-  if (c64_messageType == 1) {
+  if (ext_messageType == 1) {
     // we're processing the very first bytes
-    if (c64_bytesRead < 2) {
-      c64_acceptingData = false;      
+    if (ext_bytesRead < 2) {
       printLine("ERR: Read less than 2 bytes on start of byte array. Expected start address.");
-      return false;
+      return ERROR;
     }
 
-    currentAddress = (c64_bytesBuf[1] << 8) | c64_bytesBuf[0];
+    currentAddress = (ext_bytesBuf[1] << 8) | ext_bytesBuf[0];
     startAddress = currentAddress;
 
     char buf[20];
@@ -321,12 +327,16 @@ bool c64_processReceivedBytes() {
 
     startIndex = 2;
   }
+  else if(ext_messageType == 3) {
+    printLine(S_OK);
+    return DONE;
+  }
 
-  c64_printReceivedBytes(0);
+  ext_printReceivedBytes(0);
 
-  for (int i = startIndex; i < c64_bytesRead; ++i) {
+  for (int i = startIndex; i < ext_bytesRead; ++i) {
     setCurrentAddress(currentAddress);
-    unsigned int data = c64_bytesBuf[i];
+    unsigned int data = ext_bytesBuf[i];
     bool success = writeData(data, true);
 
     if (!success) {
@@ -336,8 +346,7 @@ bool c64_processReceivedBytes() {
       sprintf(buf, "D: %02x A: %04x ST: E", data, currentAddress);
       printLine(buf);
 
-      c64_acceptingData = false;
-      return false;
+      return ERROR;
     }
     ++currentAddress;
   }
@@ -346,7 +355,7 @@ bool c64_processReceivedBytes() {
   sprintf(buf, "ROM St:%04x Next:%04x", startAddress, currentAddress);
   printLine(buf);
 
-  return true;
+  return AWAITING_NEXT_PACKET;
 }
 
 // To validate the checksum
@@ -356,45 +365,18 @@ bool c64_processReceivedBytes() {
 // Note: we only validate the checksum for the bytes, not the header.
 //   If the header gets corrupted, we're kinda in trouble and don't
 //   do anything about it. TODO implement a solution to that problem.
-bool c64_validateChecksum() {
-  unsigned int checksumReceived = ((unsigned int)c64_checksumHi << 8) + c64_checksumLo;
+// Note: we simplified this and handle 12-bit checksums
+bool ext_validateChecksum() {
+  unsigned int checksumReceived = ((unsigned int)ext_checksumHi << 8) + ext_checksumLo;
 
   unsigned int checksumCalculated = 0;
-  for (unsigned int i = 0; i < c64_bytesRead; ++i) {
-    checksumCalculated += c64_bytesBuf[i];
+  for (unsigned int i = 0; i < ext_bytesRead; ++i) {
+    checksumCalculated += ext_bytesBuf[i];
   }
 
   unsigned int summed = checksumCalculated + checksumReceived;
 
-  // this feels dumb, but since we don't know for sure how big the checksum might be,
-  // we find out the number of bits we need to check based on how big of a sum we have.
-  // As long as we're doing the bit check against an integer bigger than our sum,
-  // we should be ok.
-  unsigned int numBits = 0;
-  unsigned int result = 1;
-  do {
-    if (result <= summed) {
-      ++numBits;
-      result = result << 1;
-    }
-    else {
-      break;
-    }
-  } while (true);
-
-  bool checksumError = false;
-  unsigned int checked = summed;
-  // check that all bits are 1
-  for (int i = 0; i < numBits; ++i) {
-    if ((checked & 1) == 0) {
-      checksumError = true;
-      c64_acceptingData = false;
-      break;
-    }
-    checked = checked >> 1;
-  }
-
-  if (checksumError) {
+  if(summed != 4095) {
     printLine(S_CHECKSUM_ERROR);
     char buf[60];
     sprintf(buf, "calc=%d, rcvd=%d, sum=%d", checksumCalculated, checksumReceived, summed);
@@ -407,8 +389,8 @@ bool c64_validateChecksum() {
 
 void decodeHeader(int headerByte) {
   // top 3 bits are message type, bottom 5 bits are number of bytes to read
-  c64_bytesExpected = headerByte & 31;
-  c64_messageType = headerByte >> 5;
+  ext_bytesExpected = headerByte & 31;
+  ext_messageType = headerByte >> 5;
 }
 
 void setup() {
@@ -440,75 +422,105 @@ void setup() {
 
   disableSDP();
 
-  c64_resetPipe();
+  ext_resetPipe();
 
-  setupC64();
+  setupEXT();
   printLine(S_AWAITING_DATA);
 }
 
 // Get ready for new data. Only call this if you know we are in a good
 // state to receive data.
-void c64_resetPipe() {
+void ext_resetPipe() {
   dataLastReceivedMS = millis();
-  c64_messageType = 0;
-  c64_bytesExpected = 0;
-  c64_bytesRead = 0;
-  c64_currentHeaderByte = 0;
-  c64_acceptingData = true;
-
+  ext_messageType = 0;
+  ext_bytesExpected = 0;
+  ext_bytesRead = 0;
+  ext_state = AWAITING_NEXT_PACKET;
 }
 
-// if we got some data but it's been too long since we got the next bit of data
-// then let's clean everything up and start listening for new data.
-void c64_checkTimeoutAndUpdateState() {
+// Checks to see if too much time has passed while we were expecting data.
+// We will reply back to the sender if so.
+// Returns true if timeout.
+bool ext_checkReplyTimeout() {
   unsigned long currentTimeMS = millis();
-
-  if((c64_messageType != 0) && (currentTimeMS - dataLastReceivedMS) > C64_DATA_TIMEOUT_MS) {
-    c64_resetPipe();
-    printLine(S_AWAITING_DATA);
+  if((currentTimeMS - dataLastReceivedMS) > EXT_DATA_REPLY_TIMEOUT_MS) {
+    return true;
   }
+  return false;
+}
+
+// Send a reply
+//  T = Timeout, try again
+//  A = ACK
+void ext_reply(char reply) {
+  dataLastReceivedMS = millis();
+  ext_Serial.write(reply);
 }
 
 void loop() {
   checkAndSetSelectedEEPROM();
-  c64_checkTimeoutAndUpdateState();
 
-  // IF THE C64 HAS DATA THEN PRINT IT HERE
-  if (c64_Serial.available() > 0) {
-    dataLastReceivedMS = millis();
-    int byteRead = c64_Serial.read();
+  bool byteAvailable = ext_Serial.available() > 0 ? true : false;
+  int byteRead = 0;
+  if(byteAvailable) {
+    byteRead = ext_Serial.read();
+    ++ext_totalBytesRead;
+  }
 
-    // if we're in an error state, we'll just throw away anything we receive until we time out
-    if (!c64_acceptingData) {
+  if(byteAvailable && (ext_state == ERROR || ext_state == DONE)) {
+    return; // ignore due to ERROR or DONE state, stay silent so message stays on screen
+  }
+  else if(byteAvailable && ext_state == AWAITING_NEXT_PACKET) {
+    decodeHeader(byteRead);
+    if(ext_messageType == 3) {
+      ext_state = DONE;
+      ext_reply(REPLY_ACK);
+      return;
+    }
+    ext_state = AWAITING_HEADER_CHECKSUM_LO;
+    return;
+  }
+  else if(byteAvailable && ext_state == AWAITING_HEADER_CHECKSUM_LO) {
+    ext_checksumLo = byteRead;
+    ext_state = AWAITING_HEADER_CHECKSUM_HI;
+    return;
+  }
+  else if(byteAvailable && ext_state == AWAITING_HEADER_CHECKSUM_HI) {
+    ext_checksumHi = byteRead;
+    ext_state = AWAITING_BYTES;
+    return;
+  }
+  else if(byteAvailable && ext_state == AWAITING_BYTES) {
+    ext_bytesBuf[ext_bytesRead] = byteRead;
+    ++ext_bytesRead;
+    if (ext_bytesRead < ext_bytesExpected) {
+      return; // get next byte
+    }
+
+    if(!ext_validateChecksum()) {
+      ext_resetPipe();
+      ext_reply(REPLY_CHECKSUM_ERROR);
       return;
     }
 
-    if (c64_currentHeaderByte == 0) {
-      decodeHeader(byteRead);
-      ++c64_currentHeaderByte;
-    } else if (c64_currentHeaderByte == 1) {
-      c64_checksumLo = byteRead;
-      ++c64_currentHeaderByte;
-    } else if (c64_currentHeaderByte == 2) {
-      c64_checksumHi = byteRead;
-      ++c64_currentHeaderByte;
-    } else {
-      // if here, we're actually reading the byte array
-      c64_bytesBuf[c64_bytesRead] = byteRead;
-
-      ++c64_bytesRead;
-
-      if (c64_bytesRead == c64_bytesExpected) {
-        if(!c64_validateChecksum()) {
-          return;
-        }
-        if(!c64_processReceivedBytes()) {
-          return;
-        }
-
-        c64_resetPipe(); // wait for data again since this was successful.
-      }
+    ext_state = ext_processReceivedBytes();
+    if(ext_state == ERROR) {
+      return; // errors here are non-recoverable
     }
+    else if(ext_state == DONE) {
+      return; // nothing to do here
+    }
+
+    // if here, we successfully processed everything
+    ext_resetPipe();
+    ext_reply(REPLY_ACK);
+
+    return;
+  }
+
+  if(ext_state > DONE && ext_totalBytesRead > 0 && ext_checkReplyTimeout()) {
+    ext_reply(REPLY_TIMEOUT);
+    return;
   }
 
 }
